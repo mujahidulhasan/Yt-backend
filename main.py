@@ -1,14 +1,14 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import yt_dlp
+from yt_dlp.utils import DownloadError
 
 app = FastAPI(title="YouTube Info Backend (yt-dlp)")
 
-# CORS: you can restrict origins later for security
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # in production, replace * with your Vercel domain
+    allow_origins=["*"],  # চাইলে চাইলে পরে ভেরসেল ডোমেইন বসাতে পারো
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -35,7 +35,10 @@ def _is_audio_only(f: dict) -> bool:
 
 @app.get("/")
 async def root():
-    return {"ok": True, "message": "YouTube backend is running. Call /yt/info?url=... to use it."}
+    return {
+        "ok": True,
+        "message": "YouTube backend is running. Call /yt/info?url=... to use it."
+    }
 
 
 @app.get("/yt/info", response_model=YTResponse)
@@ -45,10 +48,30 @@ async def yt_info(url: str = Query(..., description="YouTube video URL")):
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
+        "noplaylist": True,
     }
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+    except DownloadError as e:
+        msg = str(e)
+        # বিশেষ কেস: bot check
+        if "Sign in to confirm you’re not a bot" in msg or "not a bot" in msg:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "YouTube এই ভিডিওর জন্য 'sign in to confirm you’re not a bot' চাচ্ছে। "
+                    "server-side backend এই check পাশ করতে পারে না। অন্য কোনো ভিডিও ট্রাই করুন।"
+                ),
+            )
+        # অন্য yt-dlp error
+        raise HTTPException(status_code=400, detail=msg)
+
+    except Exception as e:
+        # generic unexpected error
+        raise HTTPException(status_code=500, detail=f"Unexpected backend error: {e}")
 
     title = info.get("title")
     duration = info.get("duration")
