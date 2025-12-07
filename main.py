@@ -1,4 +1,4 @@
-# main.py (Final Code with Scraping and 422 Fix)
+# main.py
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,10 +6,9 @@ import requests
 from bs4 import BeautifulSoup
 import json
 import re
-from pydantic import BaseModel # 💡 422 Error Fix: Pydantic BaseModel
+from pydantic import BaseModel # 422 Error Fix: Pydantic BaseModel
 
 # --- 1. Pydantic মডেল (422 ত্রুটি সমাধানের জন্য) ---
-# এটি ফ্রন্টএন্ড থেকে আসা JSON বডি { "video_url": "..." } কে পার্স করবে।
 class VideoRequest(BaseModel):
     video_url: str
 
@@ -44,6 +43,21 @@ VIDSSAVE_HEADERS = {
     "sec-ch-ua-platform": '"Windows"',
 }
 
+# --- Utility Function: Duration Formatter (Frontend এ সহায়ক) ---
+def format_duration(seconds):
+    if seconds is None or seconds == 0:
+        return "N/A"
+    try:
+        seconds = int(seconds)
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        secs = seconds % 60
+        if hours > 0:
+            return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+        return f"{minutes:02d}:{secs:02d}"
+    except (TypeError, ValueError):
+        return "N/A"
+
 
 # --- 5. Health Check Endpoint ---
 @app.get("/")
@@ -53,12 +67,11 @@ def read_root():
 
 # --- 6. Vidssave Scraping Endpoint (FINAL) ---
 @app.post("/scrape/vidssave")
-async def scrape_vidssave_info(request: VideoRequest): # 💡 Pydantic মডেল ব্যবহার
+async def scrape_vidssave_info(request: VideoRequest):
     """
     Scrapes download links and info from the Vidssave.com hidden API.
     """
     
-    # মডেল থেকে URL টি বের করে নেওয়া
     video_url = request.video_url
 
     # POST রিকোয়েস্টে পাঠানোর জন্য ডেটা (Payload)
@@ -68,7 +81,6 @@ async def scrape_vidssave_info(request: VideoRequest): # 💡 Pydantic মডে
     }
 
     try:
-        # requests.post() রিকোয়েস্ট
         response = requests.post(
             VIDSSAVE_API_URL,
             headers=VIDSSAVE_HEADERS,
@@ -80,23 +92,40 @@ async def scrape_vidssave_info(request: VideoRequest): # 💡 Pydantic মডে
         data = response.json()
         video_data = data.get('data')
 
-        if not video_data or not video_data.get('download_links'):
+        # 'resources' কী চেক করা হচ্ছে
+        if not video_data or not video_data.get('resources'):
             error_message = video_data.get('msg') if video_data else "Vidssave failed to process the link."
             raise HTTPException(status_code=400, detail=f"Scraping Failed: {error_message}")
 
         title = video_data.get('title') or "Untitled Video"
         thumbnail_url = video_data.get('thumbnail')
+        duration_seconds = video_data.get('duration') # Duration in seconds
 
         extracted_formats = []
-        for link in video_data['download_links']:
-            quality = link.get('quality') or link.get('type') or "Default"
+        # 'resources' এর ওপর লুপ চলছে
+        for link in video_data['resources']: 
+            quality = link.get('quality') or link.get('format') or link.get('type') or "Default"
+            
+            # OPUS (Audio) বা অন্য ফরমেটকে ম্যাপ করা
+            ext = link.get('format', '').lower()
+            if ext == 'opus' or ext == 'webm':
+                 ext = 'm4a' # অডিও ট্যাবে দেখানোর জন্য
 
-            # শুধুমাত্র প্রয়োজনীয় ফরম্যাটগুলো নেওয়া হচ্ছে
-            if link.get('ext') in ('mp4', 'mp3', 'm4a', 'webm'):
-                extracted_formats.append({
+            if link.get('type') == 'video':
+                # ভিডিও ফরমেটের জন্য শুধু MP4/WebM নেব
+                if link.get('format', '').lower() in ('mp4', 'webm'):
+                    extracted_formats.append({
+                        "resolution": quality,
+                        "ext": link.get('format', '').lower(),
+                        "url": link.get('download_url'), 
+                        "filesize": link.get('size')
+                    })
+            
+            elif link.get('type') == 'audio':
+                 extracted_formats.append({
                     "resolution": quality,
-                    "ext": link.get('ext'),
-                    "url": link.get('url'),
+                    "ext": ext,
+                    "url": link.get('download_url'), 
                     "filesize": link.get('size')
                 })
 
@@ -106,6 +135,7 @@ async def scrape_vidssave_info(request: VideoRequest): # 💡 Pydantic মডে
         # Final return structure
         return {
             "title": title,
+            "duration": format_duration(duration_seconds), # Formatted Duration
             "thumbnails": [{"url": thumbnail_url, "resolution": "HQ"}] if thumbnail_url else [],
             "video_formats": video_formats,
             "audio_formats": audio_formats,
@@ -113,13 +143,7 @@ async def scrape_vidssave_info(request: VideoRequest): # 💡 Pydantic মডে
         }
 
     except requests.exceptions.RequestException as e:
-        # Network বা Connection Error
         raise HTTPException(status_code=503, detail=f"Scraping Failed: Connection error or Vidssave blocked the IP. {str(e)}")
     except Exception as e:
-        # অন্যান্য অনাকাঙ্ক্ষিত ত্রুটি
         print(f"Scraping Logic Error: {e}")
         raise HTTPException(status_code=500, detail=f"Scraping Logic Error: An internal error occurred.")
-
-
-# --- পুরনো /yt/info এন্ডপয়েন্ট বা অন্য কোনো কোড থাকলে এই সেকশনের পরে যোগ করুন। ---
-# ...
