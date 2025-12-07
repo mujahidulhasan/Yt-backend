@@ -1,4 +1,6 @@
 fastapi
 uvicorn
-requests
-beautifulsoup4
+requests       <-- HTTP রিকোয়েস্ট পাঠানোর জন্য
+beautifulsoup4 <-- স্ক্র্যাপ করা HTML পার্স করার জন্য (যদিও Vidssave JSON দেয়, এটা ভালো প্র্যাকটিস)
+yt-dlp
+pydantic
